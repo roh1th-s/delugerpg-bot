@@ -1,12 +1,14 @@
 import requests
 import os
 import re
+from bs4 import BeautifulSoup
 from .constants import Urls
 from .BattleMove import *
 from .Battle import *
 
+
 class DelugeAPIClient:
-    def __init__(self, sessCookie: str):
+    def __init__(self, sessCookie: str, password: str, username: str = None):
         if not sessCookie or sessCookie == "":
             raise Exception("Session cookie not provided.")
 
@@ -18,7 +20,55 @@ class DelugeAPIClient:
 
         self.session: requests.Session = session
 
+        self.username = username or self.get_username()
+        self.password = password
+
         self.current_battle = None
+
+    def get_username(self):
+        res = self.get(Urls.profile)
+
+        soup = BeautifulSoup(res.text, 'html.parser')
+
+        info_box = soup.find("div", class_="infobox")
+
+        # should be first proffield div (that contains username)
+        username_field = info_box.find("div", class_="proffield")
+        name = username_field.h4.text
+
+        return name
+
+    def handle_timeout(self, timeout_res):
+        soup = BeautifulSoup(timeout_res.text, 'html.parser')
+        login_form = soup.find(id="loginformform")
+        hidden_input = login_form.select_one('input[type="hidden"]')
+
+        name = hidden_input.attrs["name"]
+        value = hidden_input.attrs["value"]
+
+        if not (hasattr(self, 'username') or hasattr(self, 'password')):
+            raise Exception(
+                "Username / Password could not be found. Session cookie is probably invalid.")
+
+        # calling the login/validate endpoint with credentials
+        res = self.session.post(Urls.login_validate, {
+            "username": f"{self.username}",
+            "password": f"{self.password}",
+            f"{name}": f"{value}",
+            "Login": "Login"
+        })
+
+        # response is an intermediate loading page with a redirect link
+        # also sets a token which is checked later on presumably
+        soup = BeautifulSoup(res.text, 'html.parser')
+        loggin_in_div = soup.find(id="loggingin")
+
+        # looks roughly like /home/ad3ad8ac93ceabb2c/17527905
+        relative_href = loggin_in_div.select_one("a").attrs["href"]
+
+        # requesting the home page with the extra stuff specified in the redirect link
+        # cookie should be revalidated after this
+        res = self.session.get(f"{Urls.base_url}{relative_href}")
 
     def get(self, url, *kwargs) -> requests.Response:
         r"""Wrapper around requests.Session#get()
@@ -28,19 +78,14 @@ class DelugeAPIClient:
         :rtype: requests.Response
         """
         res = self.session.get(url, *kwargs)
-        # TODO: check for timeouts
-        # req gets redirected to https://www.delugerpg.com/login/timeout
-        # login with https://www.delugerpg.com/login/validate
-        # request body (form data)
-        # {
-        #     "username": "",
-        #     "password": "",
-        #     "DBhYWU": "jg2NjM2MzU", ( found in timeout page )
-        #     "Login": "Login"
-        # }
 
-        # two codes need to passed with login/validate, found on login/timeout page
-        # also have to clean up current battle if this happens while its going on
+        if res.url.startswith(Urls.timeout):
+            print("Timeout, trying to log in....")
+            self.handle_timeout(res)
+            print("Revalidated cookie successfully. Proceeding.")
+            # TODO: have to clean up current battle if this happens while its going on
+
+        res = self.session.get(url, *kwargs)
 
         return res
 
@@ -55,7 +100,14 @@ class DelugeAPIClient:
         :rtype: requests.Response
         """
         res = self.session.post(url, data, json, *kwargs)
-        # check for timeouts
+
+        if res.url.startswith(Urls.timeout):
+            print("Timeout, trying to log in....")
+            self.handle_timeout(res)
+            print("Revalidated cookie successfully. Proceeding.")
+
+        res = self.session.post(url, data, json, *kwargs)
+
         return res
 
     def startUserBattle(self, user: str) -> Battle:
@@ -118,7 +170,6 @@ class DelugeAPIClient:
         else:
             raise Exception(f"Error starting wild battle with {pokeName}, level : {level}")
 
-
     def doBattleMove(self, move: BattleMove):
         res = None
         battle = self.current_battle
@@ -144,7 +195,8 @@ class DelugeAPIClient:
 
                 if battle_token:
                     battle.battle_token = battle_token
-                    print(f"First move : Poke is {self.current_battle.player.team[move.selectedPokemon - 1].name} ")
+                    print(
+                        f"First move : Poke is {self.current_battle.player.team[move.selectedPokemon - 1].name} ")
                 else:
                     raise Exception("Battle token not found")
         else:
@@ -157,31 +209,45 @@ class DelugeAPIClient:
             elif move.type == MoveType.POKE_SELECT_MOVE:
                 json["pokeselect"] = move.selectedPokemon
 
-            res = self.post(
-                Urls.comp_battle_ajax if battle.type == BattleType.COMP_BATTLE else Urls.wild_battle_ajax,
-                json
-            )
+            res = self.post(Urls.comp_battle_ajax if battle.type ==
+                            BattleType.COMP_BATTLE else Urls.wild_battle_ajax, json)
 
             if move.type == MoveType.ATTACK_MOVE:
                 print(f"Doing attack {move.selectedAttack}")
             elif move.type == MoveType.POKE_SELECT_MOVE:
                 print(f"Selected pokemon {move.selectedPokemon}")
 
-        battle.move_count += 1;
+        battle.move_count += 1
         battle.update(res)
-    
+
     def getBattleResults(self):
         battle = self.current_battle
-        
+
         if not battle.game_over:
             print("Battle is not over!")
             return
 
-        res = self.post(
-            Urls.comp_battle_ajax if battle.type == BattleType.COMP_BATTLE else Urls.wild_battle_ajax,
-            {
-                "do" : "select"
-            }
-        )
+        # If game end html page was returned previously, use that html
+        # because any request after that won't be able to fetch the endgame html
+        end_html = battle.game_end_html
 
-        return battle.parseResults(res.text)
+        if not end_html:
+            res = self.post(Urls.comp_battle_ajax if battle.type ==
+                            BattleType.COMP_BATTLE else Urls.wild_battle_ajax, {"do": "select"})
+            end_html = res.text
+
+        soup = BeautifulSoup(end_html, 'html.parser')
+
+        notif_div = soup.find("div", class_="notify_done")
+        win_text: str = notif_div.decode_contents()
+
+        res = re.search(r"won ([0-9,]+)\b.+gained ([0-9,]+) exp.", win_text)
+
+        if res:
+            money = res.group(1).replace(",", "", -1)
+            exp = res.group(2).replace(",", "", -1)
+
+            return {
+                "money": int(money),
+                "exp": int(exp)
+            }

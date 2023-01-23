@@ -13,12 +13,12 @@ from .DelugeAPI import *
 #     def run():
 
 class DelugeBot:
-    def __init__(self, phpsessid: str) -> None:
+    def __init__(self, phpsessid: str, password: str, username: str = None) -> None:
         if not phpsessid:
             raise Exception("No session cookie provided to bot.")
 
         self.cookie = phpsessid
-        self.http = DelugeAPIClient(phpsessid)
+        self.http = DelugeAPIClient(phpsessid, password, username)
 
     def levelFarmBattle(self, poke_type: str):
         user = f"s-{poke_type}"

@@ -2,6 +2,7 @@ import re
 from bs4 import BeautifulSoup, Tag
 from enum import Enum
 
+
 def parseInitialBattleData(htmlNode):
     opp_name = htmlNode.select("h2")[0].string
     res = re.search(r"(.+)'s Team", opp_name)
@@ -86,6 +87,9 @@ class Battle:
         # Set to true when either the player's or opponent's poke has fainted.
         self.current_duel_over = False
 
+        # To store the html which has match results
+        self.game_end_html = None
+
         self.game_over = False
         self.winner = None
 
@@ -103,7 +107,7 @@ class Battle:
 
         _, self_pokes = parseInitialBattleData(selfTeamDiv)
 
-        self_name = ""
+        self_name = self.http.username 
 
         name_dropdown = soup.find(id="ndright")
         if name_dropdown:
@@ -151,6 +155,18 @@ class Battle:
             # If in the previous move the duel was over, this must be a fresh duel.
             self.current_duel_over = False
 
+        # Sometimes gives us the win page directly???
+        notify_done = soup.find("div", class_="notify_done")
+        if notify_done:
+            self.current_duel_over = True
+            self.game_over = True
+            self.game_end_html = html
+            if notify_done.text.find("won") != -1:
+                self.winner = "player"
+            else:
+                self.winner = "opponent"
+            return
+
         # Update opponents pokemon
         opponent_div = soup.find(id="opponent")
         poke_name, hp_rem, hp_max = parsePokemonData(opponent_div)
@@ -167,20 +183,3 @@ class Battle:
         elif self.opponent.pokes_left == 0:
             self.winner = "player"
             self.game_over = True
-
-    def parseResults(self, html):
-        soup = BeautifulSoup(html, 'html.parser')
-
-        notif_div = soup.find("div", class_="notify_done")
-        win_text: str = notif_div.decode_contents()
-
-        res = re.search(r"won ([0-9,]+)\b.+gained ([0-9,]+) exp.", win_text)
-
-        if res:
-            money = res.group(1).replace(",", "", -1)
-            exp = res.group(2).replace(",", "", -1)
-
-            return {
-                "money": int(money),
-                "exp": int(exp)
-            }

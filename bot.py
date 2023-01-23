@@ -8,7 +8,8 @@ load_dotenv()
 
 def main():
     try:
-        bot = DelugeBot(getenv("PHPSESSID"))
+        bot = DelugeBot(getenv("PHPSESSID"), getenv("PASSWORD"), getenv("NICKNAME"))
+        # bot = DelugeBot(getenv("PHPSESSID"), getenv("PASSWORD"))
         bot.levelFarmBattle("electric")
 
         # print(bot.http.getMapHashes("overworld1"))
