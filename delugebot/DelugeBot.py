@@ -33,7 +33,7 @@ class DelugeBot:
 
             sleep(2)
 
-            while not battle.current_duel_over: 
+            while not (battle.current_duel_over or battle.game_over): 
                 self.http.doBattleMove(BattleMove(MoveType.ATTACK_MOVE, selected_attack=2))
                 sleep(uniform(1, 2))
             
@@ -45,6 +45,13 @@ class DelugeBot:
                     break
         
         results = self.http.getBattleResults()
-        print (f"Winner is {battle.winner}. Earnings: {results['money']}, Exp : {results['exp']}")
+
+        if results.get("cancelled"):
+            print("Battle was cancelled. [Most probably due to a timeout / invalid creds]")
+        elif results.get("defeat"):
+            print(f"Battle was lost. Winner is {battle.winner.name}")
+        else:
+            print (f"Winner is {battle.winner.name}. Earnings: {results['money']}, Exp : {results['exp']}")
+
     def openMap():
         pass

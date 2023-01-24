@@ -38,7 +38,14 @@ class DelugeAPIClient:
 
         return name
 
-    def handle_timeout(self, timeout_res):
+    def should_revalidate(self, res):
+        return res.url.startswith(Urls.timeout) or (not res.ok)
+
+    def revalidate_cookie(self):
+        print("Attempting to revalidated cookie...")
+        # Request the login/timeout page, which contains necessary tokens for login
+        timeout_res = self.session.get(Urls.timeout)
+
         soup = BeautifulSoup(timeout_res.text, 'html.parser')
         login_form = soup.find(id="loginformform")
         hidden_input = login_form.select_one('input[type="hidden"]')
@@ -70,6 +77,15 @@ class DelugeAPIClient:
         # cookie should be revalidated after this
         res = self.session.get(f"{Urls.base_url}{relative_href}")
 
+        if res.ok:
+            print("Revalidated cookie successfully. Proceeding.")
+        else:
+            raise Exception("Unable to revalidate cookie!")
+
+    def clean_up(self):
+        if self.current_battle:
+            self.current_battle.terminate(invalidated=True)
+
     def get(self, url, *kwargs) -> requests.Response:
         r"""Wrapper around requests.Session#get()
 
@@ -79,11 +95,9 @@ class DelugeAPIClient:
         """
         res = self.session.get(url, *kwargs)
 
-        if res.url.startswith(Urls.timeout):
-            print("Timeout, trying to log in....")
-            self.handle_timeout(res)
-            print("Revalidated cookie successfully. Proceeding.")
-            # TODO: have to clean up current battle if this happens while its going on
+        if self.should_revalidate(res):
+            self.revalidate_cookie()
+            self.clean_up()
 
         res = self.session.get(url, *kwargs)
 
@@ -101,10 +115,9 @@ class DelugeAPIClient:
         """
         res = self.session.post(url, data, json, *kwargs)
 
-        if res.url.startswith(Urls.timeout):
-            print("Timeout, trying to log in....")
-            self.handle_timeout(res)
-            print("Revalidated cookie successfully. Proceeding.")
+        if self.should_revalidate(res):
+            self.revalidate_cookie()
+            self.clean_up()
 
         res = self.session.post(url, data, json, *kwargs)
 
@@ -183,22 +196,25 @@ class DelugeAPIClient:
                 }
             )
 
-            if (res.status_code == 200):
-                result = re.search(
-                    r".*<input\s*type=\"hidden\"\s*name=\"battletoken\"\s*value=\"(.+)\"\s*/?>.*",
-                    res.text)
+            if self.current_battle.invalidated:
+                # Don't do anything more if the battle has been terminated
+                return
 
-                if not result:
-                    raise Exception("Battle token not found")
+            result = re.search(
+                r".*<input\s*type=\"hidden\"\s*name=\"battletoken\"\s*value=\"(.+)\"\s*/?>.*",
+                res.text)
 
-                battle_token = result.group(1)
+            if not result:
+                raise Exception("Battle token not found")
 
-                if battle_token:
-                    battle.battle_token = battle_token
-                    print(
-                        f"First move : Poke is {self.current_battle.player.team[move.selectedPokemon - 1].name} ")
-                else:
-                    raise Exception("Battle token not found")
+            battle_token = result.group(1)
+
+            if battle_token:
+                battle.battle_token = battle_token
+                print(
+                    f"First move : Poke is {self.current_battle.player.team[move.selectedPokemon - 1].name} ")
+            else:
+                raise Exception("Battle token not found")
         else:
             json = {
                 "do": move.do,
@@ -211,6 +227,10 @@ class DelugeAPIClient:
 
             res = self.post(Urls.comp_battle_ajax if battle.type ==
                             BattleType.COMP_BATTLE else Urls.wild_battle_ajax, json)
+
+            if self.current_battle.invalidated:
+                # Don't do anything more if the battle has been terminated
+                return
 
             if move.type == MoveType.ATTACK_MOVE:
                 print(f"Doing attack {move.selectedAttack}")
@@ -227,8 +247,14 @@ class DelugeAPIClient:
             print("Battle is not over!")
             return
 
-        # If game end html page was returned previously, use that html
-        # because any request after that won't be able to fetch the endgame html
+        if battle.invalidated:
+            # If the battle ended early due to timeout / creds invalidation
+           return {
+                "cancelled" : True
+           } 
+
+        # If win/loss page was returned previously, use the previously returned html
+        # because any request now won't be able to fetch it. 
         end_html = battle.game_end_html
 
         if not end_html:
@@ -250,4 +276,8 @@ class DelugeAPIClient:
             return {
                 "money": int(money),
                 "exp": int(exp)
+            }
+        elif win_text.find("lost") != -1:
+            return {
+                "defeat" : True
             }
