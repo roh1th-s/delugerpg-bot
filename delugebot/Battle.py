@@ -1,6 +1,7 @@
 import re
 from bs4 import BeautifulSoup, Tag
 from enum import Enum
+from .constants import Urls
 
 
 class Poke:
@@ -10,6 +11,7 @@ class Poke:
         self.level = level
         self.hp = hp
         self.hp_max = None
+        self.current_ailment: str = None
 
 
 class BattlePlayer:
@@ -18,10 +20,14 @@ class BattlePlayer:
         self.team = pokemon
         self.pokes_left = len(pokemon)
 
+        # Current poke active
+        self.current_poke: Poke = None
+
 
 class BattleType(Enum):
     COMP_BATTLE = 1
     WILD_BATTLE = 2
+    GYM_BATTLE = 3
 
 
 class Battle:
@@ -94,7 +100,25 @@ class Battle:
         hp_remaining: int = int(res.group(1))
         hp_max: int = int(res.group(2))
 
-        return [poke_name, hp_remaining, hp_max]
+        ail_btn = div.select_one("i.ailbtn")
+
+        ailment = None
+        if ail_btn:
+            classes = ail_btn["class"]
+            for class_ in classes:
+                if class_.startswith("ailbtn-"):
+                    # eg. ailbtn-slp
+                    result = re.search(r"ailbtn-(.+)\b", class_)
+                    if result:
+                        ailment = result.group(1)
+                        break
+
+        return {
+            "poke_name": poke_name,
+            "hp_rem": hp_remaining,
+            "hp_max": hp_max,
+            "ailment": ailment
+        }
 
     def fromHtml(self, html: str):
         soup = BeautifulSoup(html, 'html.parser')
@@ -120,24 +144,37 @@ class Battle:
 
         return self
 
-    def updatePokemon(self, poke_name, hp_rem, hp_max, player: BattlePlayer):
+    def getMoveUrl(self):
+        if self.type == BattleType.COMP_BATTLE:
+            if self.move_count == 0:
+                return Urls.comp_battle
+            return Urls.comp_battle_ajax
+        elif self.type == BattleType.WILD_BATTLE:
+            return Urls.wild_battle_ajax
+        elif self.type == BattleType.GYM_BATTLE:
+            return Urls.gym_battle_ajax
+
+    def updatePokemon(self, poke_data, player: BattlePlayer):
         found = False
         for i in range(len(player.team)):
             poke = player.team[i]
             if poke.hp == 0:
                 continue
 
-            if poke.name == poke_name:
+            if poke.name == poke_data["poke_name"]:
                 found = True
-                poke.hp = hp_rem
-                poke.hp_max = hp_max
-                if hp_rem == 0:
+                player.current_poke = poke
+                poke.hp = poke_data["hp_rem"]
+                poke.hp_max = poke_data["hp_max"]
+                poke.current_ailment = poke_data["ailment"]
+
+                if poke_data["hp_rem"] == 0:
                     player.pokes_left -= 1
                     self.current_duel_over = True
                 break
 
         if not found:
-            print(f"Pokemon {poke_name} of {player.name} was not found in local state.")
+            print(f"Pokemon {poke_data['poke_name']} of {player.name} was not found in local state.")
 
     def isPokeFainted(self, poke_no, player: BattlePlayer = None):
         if not player:
@@ -158,30 +195,48 @@ class Battle:
             # If in the previous move the duel was over, this must be a fresh duel.
             self.current_duel_over = False
 
-        # Sometimes gives us the win page directly???
-        notify_done = soup.find("div", class_="notify_done")
-        if notify_done:
+        # Sometimes gives us the game over page directly???
+        game_end_div = soup.find("div", class_="notify_done")
+        if not game_end_div:
+            game_end_div = soup.find(
+                "div", class_="infobox") or soup.find(
+                "div", class_="notify_warning") or soup.find(
+                "div", class_="notify_error")
+                
+            meta_tag = soup.select_one('meta[http-equiv="refresh"]')
+            if meta_tag:
+                content = meta_tag["content"]
+                if content:
+                    game_end_div = meta_tag
+
+        if game_end_div:
             self.terminate()
             self.game_end_html = html
 
-            self.winner = notify_done.text.find("won") == -1 and self.opponent or self.player
+            game_end_text = game_end_div.text
+            if game_end_text.find("defeated") != -1 or game_end_text.find("captured") != -1:
+                # if there is 'defeated' or 'captured' then we won / captured the wild pokemon
+                self.winner = self.player
+            else:
+                self.winner = self.opponent
+
             return
 
         # Update opponents pokemon
         opponent_div = soup.find(id="opponent")
-        poke_name, hp_rem, hp_max = Battle.parsePokemonData(opponent_div)
-        self.updatePokemon(poke_name, hp_rem, hp_max, self.opponent)
+        poke_data = Battle.parsePokemonData(opponent_div)
+        self.updatePokemon(poke_data, self.opponent)
 
         # Update players pokemon
         player_div = soup.find(id="user")
-        poke_name, hp_rem, hp_max = Battle.parsePokemonData(player_div)
-        self.updatePokemon(poke_name, hp_rem, hp_max, self.player)
+        poke_data = Battle.parsePokemonData(player_div)
+        self.updatePokemon(poke_data, self.player)
 
         if self.player.pokes_left == 0:
-            self.winner = self.opponent 
+            self.winner = self.opponent
             self.terminate()
         elif self.opponent.pokes_left == 0:
-            self.winner = self.player 
+            self.winner = self.player
             self.terminate()
 
     def terminate(self, **kwargs):

@@ -1,11 +1,14 @@
 import requests
 import os
 import re
+import json
 from bs4 import BeautifulSoup
 from .constants import Urls
 from .BattleMove import *
 from .Battle import *
 
+class GymNotFoundException(Exception):
+    pass
 
 class DelugeAPIClient:
     def __init__(self, sessCookie: str, password: str, username: str = None):
@@ -39,10 +42,22 @@ class DelugeAPIClient:
         return name
 
     def should_revalidate(self, res):
-        return res.url.startswith(Urls.timeout) or (not res.ok)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        meta_equiv = soup.select_one('meta[http-equiv="refresh"]')
+
+        is_captcha = False
+
+        if meta_equiv:
+            content = meta_equiv["content"]
+            if content.find(Urls.captcha) != -1:
+                is_captcha = True
+                print("Encountered captcha.")
+                self.logout()
+
+        return res.url.startswith(Urls.timeout) or is_captcha or (not res.ok)
 
     def revalidate_cookie(self):
-        print("Attempting to revalidated cookie...")
+        print("Attempting to revalidate cookie...")
         # Request the login/timeout page, which contains necessary tokens for login
         timeout_res = self.session.get(Urls.timeout)
 
@@ -81,10 +96,14 @@ class DelugeAPIClient:
             print("Revalidated cookie successfully. Proceeding.")
         else:
             raise Exception("Unable to revalidate cookie!")
-
+    
     def clean_up(self):
         if self.current_battle:
             self.current_battle.terminate(invalidated=True)
+
+    def logout(self):
+        self.get(Urls.logout_ajax)
+        print("Logged out.")
 
     def get(self, url, *kwargs) -> requests.Response:
         r"""Wrapper around requests.Session#get()
@@ -123,19 +142,6 @@ class DelugeAPIClient:
 
         return res
 
-    def startUserBattle(self, user: str) -> Battle:
-        res = self.get(f"{Urls.user_battle}/u/{user}")
-
-        if res.text.find("No such User.") != -1:
-            raise Exception("No such user found!")
-
-        # create a battle object from the html with necessary metadata
-        self.current_battle = Battle(BattleType.COMP_BATTLE, self).fromHtml(res.text)
-
-        print("Battle succesfully created")
-
-        return self.current_battle
-
     def getMapHashes(self, mapName: str):
         response = self.get(f"{Urls.map}/{mapName}")
         results = re.search(
@@ -143,6 +149,8 @@ class DelugeAPIClient:
             response.text)
 
         if not results:
+            with open("./experiments/test.html", "w") as f:
+                f.write(response.text)
             raise Exception("Couldn't find map hashes in html")
 
         map_hash1 = results.group(1)
@@ -154,34 +162,60 @@ class DelugeAPIClient:
 
         return [map_hash1, map_hash2, map_hash3]
 
-    def moveInMap(self, mapName: str, dir: str):
+    def moveInMap(self, mapName: str, dir: str) -> list | dict:
         hashes = self.getMapHashes(mapName)
-        response = self.post(f"{Urls.map_update_ajax}/{hashes[2]}/{hashes[0]}", {
+        res = self.post(f"{Urls.map_update_ajax}/{hashes[2]}/{hashes[0]}", {
             "direction": dir,
             "maphash": hashes[1],
             "mhx": os.getenv("MHX")
         })
-        return response.json()
+        return json.loads(res.text)
+
+    def startUserBattle(self, user: str) -> Battle:
+        res = self.get(f"{Urls.comp_battle}/u/{user}")
+
+        if res.text.find("No such User.") != -1:
+            raise Exception("No such user found!")
+
+        # create a battle object from the html with necessary metadata
+        self.current_battle = Battle(BattleType.COMP_BATTLE, self).fromHtml(res.text)
+
+        print("Battle succesfully created")
+
+        return self.current_battle
+
+    def startGymBattle(self, gym_id: int) -> Battle:
+        """Start a gym battle
+        """
+
+        response = self.get(f"{Urls.gym_battle}/{gym_id}")
+
+        if response.text.find("No such") != -1:
+            raise GymNotFoundException("Invalid gym url")
+        
+        self.current_battle = Battle(BattleType.GYM_BATTLE, self).fromHtml(response.text)
+
+        print("Gym battle started")
+
+        return self.current_battle
 
     def startWildBattle(
-            self, pokeName: str, level: int, poke_secret: str, catch_secret: str) -> Battle:
+            self, poke_catch_url: str, poke_secret: str, catch_secret: str) -> Battle:
         """Start a wild battle with a pokemon found on a map. This requires two secrets, both
             of which are accquired when finding a pokemon on any map.
         """
 
-        response = self.post(f"{Urls.catch_poke}/{pokeName}/{level}", {
+        response = self.post(f"{Urls.catch_poke}/{poke_catch_url}", {
             "do": "catch_pokemon",
             "secret": poke_secret,
             f"catch_{catch_secret}": "Try to Catch It"
         })
 
-        if response.status_code == 200:
-            wild_battle = Battle(BattleType.WILD_BATTLE, self).fromHtml(response.text)
-            print(f"Wild battle started with {pokeName}, level : {level}")
+        self.current_battle = Battle(BattleType.WILD_BATTLE, self).fromHtml(response.text)
+        poke = self.current_battle.opponent.team[0]
+        print(f"Wild battle started with {poke.name}, level : {poke.level}")
 
-            return wild_battle
-        else:
-            raise Exception(f"Error starting wild battle with {pokeName}, level : {level}")
+        return self.current_battle
 
     def doBattleMove(self, move: BattleMove):
         res = None
@@ -189,11 +223,8 @@ class DelugeAPIClient:
         if battle.move_count == 0:
             # if this is the first move
             res = self.post(
-                Urls.user_battle if battle.type == BattleType.COMP_BATTLE else Urls.catch_poke,
-                {
-                    "pokeselect": move.selectedPokemon,
-                    "do": "showattacks",
-                }
+                battle.getMoveUrl(),
+                move.toDict()
             )
 
             if self.current_battle.invalidated:
@@ -216,17 +247,11 @@ class DelugeAPIClient:
             else:
                 raise Exception("Battle token not found")
         else:
-            json = {
-                "do": move.do,
+            json = move.toDict() | {
                 "battletoken": battle.battle_token
             }
-            if move.type == MoveType.ATTACK_MOVE:
-                json["selected"] = move.selectedAttack
-            elif move.type == MoveType.POKE_SELECT_MOVE:
-                json["pokeselect"] = move.selectedPokemon
 
-            res = self.post(Urls.comp_battle_ajax if battle.type ==
-                            BattleType.COMP_BATTLE else Urls.wild_battle_ajax, json)
+            res = self.post(battle.getMoveUrl(), json)
 
             if self.current_battle.invalidated:
                 # Don't do anything more if the battle has been terminated
@@ -235,7 +260,9 @@ class DelugeAPIClient:
             if move.type == MoveType.ATTACK_MOVE:
                 print(f"Doing attack {move.selectedAttack}")
             elif move.type == MoveType.POKE_SELECT_MOVE:
-                print(f"Selected pokemon {move.selectedPokemon}")
+                print(f"Selected pokemon {move.selectedPokemon} : {battle.player.team[move.selectedPokemon - 1].name}")
+            elif move.type == MoveType.ITEM_MOVE:
+                print(f"Selected item : {move.selectedItem}")
 
         battle.move_count += 1
         battle.update(res)
@@ -249,35 +276,105 @@ class DelugeAPIClient:
 
         if battle.invalidated:
             # If the battle ended early due to timeout / creds invalidation
-           return {
-                "cancelled" : True
-           } 
+            return {
+                "cancelled": True
+            }
 
         # If win/loss page was returned previously, use the previously returned html
-        # because any request now won't be able to fetch it. 
+        # because any request now won't be able to fetch it.
         end_html = battle.game_end_html
 
         if not end_html:
-            res = self.post(Urls.comp_battle_ajax if battle.type ==
-                            BattleType.COMP_BATTLE else Urls.wild_battle_ajax, {"do": "select"})
+            res = self.post(battle.getMoveUrl(), {"do": "select"})
             end_html = res.text
 
         soup = BeautifulSoup(end_html, 'html.parser')
 
-        notif_div = soup.find("div", class_="notify_done")
-        win_text: str = notif_div.decode_contents()
+        if battle.type == BattleType.COMP_BATTLE or battle.type == BattleType.GYM_BATTLE:
+            notif_div = soup.find("div", class_="notify_done")
 
-        res = re.search(r"won ([0-9,]+)\b.+gained ([0-9,]+) exp.", win_text)
+            if (not notif_div):
+                meta_tag = soup.select_one('meta[http-equiv="refresh"]')
+                if meta_tag:
+                    content = meta_tag["content"]
+                    if content:
+                        if content.find("/gyms") != -1:
+                            return {
+                                "money": "unknown",
+                                "exp" : "unknown"
+                            }
 
-        if res:
-            money = res.group(1).replace(",", "", -1)
-            exp = res.group(2).replace(",", "", -1)
+                # if the meta tag wasn't found, see if there was an error
+                if soup.find("div", class_="notify_error"):
+                    return {
+                        "money": "unknown",
+                        "exp" : "unknown"
+                    }
 
-            return {
-                "money": int(money),
-                "exp": int(exp)
-            }
-        elif win_text.find("lost") != -1:
-            return {
-                "defeat" : True
-            }
+                # Returning 3 things seperately, in case they need to be changed individually later 
+                return {
+                    "money": "unknown",
+                    "exp" : "unknown"
+                }
+                
+
+            notif_text: str = notif_div.decode_contents()
+            
+
+            res = re.search(r"won ([0-9,]+)\b.+gained ([0-9,]+) exp.", notif_text)
+
+            if res:
+                money = res.group(1).replace(",", "", -1)
+                exp = res.group(2).replace(",", "", -1)
+
+                return {
+                    "money": int(money),
+                    "exp": int(exp)
+                }
+            elif notif_text.find("lost") != -1:
+                return {
+                    "defeat": True
+                }
+        elif battle.type == BattleType.WILD_BATTLE:
+            info_box = soup.find("div", class_="infobox")
+
+            with open('./experiments/wild_battle.html', 'w') as f:
+                f.write(end_html)
+                
+            if info_box and (info_box.text.find("captured") != -1):
+                poke_caught = info_box.find("b")
+
+                stat_btns = info_box.select("i.sbtn")
+
+                stats = []
+
+                for stat_btn in stat_btns:
+                    classes = stat_btn["class"]
+                    for class_ in classes:
+                        if class_.startswith("sbtn-"):
+                            res = re.search(r"sbtn-(.+)\b", class_)
+                            if res:
+                                stats.append(res.group(1))
+
+                return {
+                    "poke_caught": poke_caught.text,
+                    "stats": stats
+                }
+            elif soup.find("div", class_="notify_warning"):
+                return {
+                    "poke_caught": battle.opponent.team[0].name,
+                    "stats": ['unknown']
+                }
+            else:
+                notify_done_div = soup.find("div", class_="notify_done")
+
+                if notify_done_div.text.find("defeated") != -1:
+                    # We defeated it, but  couldn't capture
+                    return {
+                        "capture_failed": True
+                    }
+
+                # otherwise we lost
+                return {
+                    "defeat": True
+                }
