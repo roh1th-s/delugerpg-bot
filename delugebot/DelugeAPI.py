@@ -2,6 +2,7 @@ import requests
 import os
 import re
 import json
+from sys import argv
 from bs4 import BeautifulSoup
 from .constants import Urls
 from .BattleMove import *
@@ -154,8 +155,11 @@ class DelugeAPIClient:
             response.text)
 
         if not results:
-            with open("./experiments/test.html", "w") as f:
-                f.write(response.text)
+            if len(argv) >= 2:
+                if argv[1] == "-debug":
+                    with open("./experiments/test.html", "w") as f:
+                        f.write(response.text)
+
             raise Exception("Couldn't find map hashes in html")
 
         map_hash1 = results.group(1)
@@ -347,8 +351,10 @@ class DelugeAPIClient:
         elif battle.type == BattleType.WILD_BATTLE:
             info_box = soup.find("div", class_="infobox")
 
-            with open('./experiments/wild_battle.html', 'w') as f:
-                f.write(end_html)
+            if len(argv) >= 2:
+                if argv[1] == "-debug":
+                    with open('./experiments/wild_battle.html', 'w') as f:
+                        f.write(end_html)
                 
             if info_box and (info_box.text.find("captured") != -1):
                 poke_caught = info_box.find("b")

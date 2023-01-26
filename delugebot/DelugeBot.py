@@ -156,6 +156,8 @@ class DelugeBot:
                     curr_poke_no = 1
 
     def levelFarmBattle(self, poke_type: str, start_poke_no: int = None, attack_no: int = None):
+        # TODO Make it possible to level up every pokemon that you have
+
         user = f"s-{poke_type}"
 
         battle = self.http.startUserBattle(user)
