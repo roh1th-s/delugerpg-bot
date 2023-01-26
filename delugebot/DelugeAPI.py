@@ -28,6 +28,8 @@ class DelugeAPIClient:
 
         self.current_battle = None
 
+        self.map_hash_cache = {}
+
     def get_username(self):
         res = self.get(Urls.profile)
 
@@ -41,7 +43,7 @@ class DelugeAPIClient:
 
         return name
 
-    def should_revalidate(self, res):
+    def should_revalidate(self, res: requests.Response):
         soup = BeautifulSoup(res.text, 'html.parser')
         meta_equiv = soup.select_one('meta[http-equiv="refresh"]')
 
@@ -51,9 +53,14 @@ class DelugeAPIClient:
             content = meta_equiv["content"]
             if content.find(Urls.captcha) != -1:
                 is_captcha = True
-                print("Encountered captcha.")
-                self.logout()
 
+        if res.url.find(Urls.captcha) != -1:
+            is_captcha = True
+
+        if is_captcha:
+            print("Encountered captcha.")
+            self.logout()
+            
         return res.url.startswith(Urls.timeout) or is_captcha or (not res.ok)
 
     def revalidate_cookie(self):
@@ -117,8 +124,7 @@ class DelugeAPIClient:
         if self.should_revalidate(res):
             self.revalidate_cookie()
             self.clean_up()
-
-        res = self.session.get(url, *kwargs)
+            res = self.session.get(url, *kwargs)
 
         return res
 
@@ -137,8 +143,7 @@ class DelugeAPIClient:
         if self.should_revalidate(res):
             self.revalidate_cookie()
             self.clean_up()
-
-        res = self.session.post(url, data, json, *kwargs)
+            res = self.session.post(url, data, json, *kwargs)
 
         return res
 
@@ -163,7 +168,11 @@ class DelugeAPIClient:
         return [map_hash1, map_hash2, map_hash3]
 
     def moveInMap(self, mapName: str, dir: str) -> list | dict:
-        hashes = self.getMapHashes(mapName)
+        hashes = self.map_hash_cache.get(mapName)
+        if not hashes:
+            hashes = self.getMapHashes(mapName)
+            self.map_hash_cache[mapName] = hashes
+
         res = self.post(f"{Urls.map_update_ajax}/{hashes[2]}/{hashes[0]}", {
             "direction": dir,
             "maphash": hashes[1],

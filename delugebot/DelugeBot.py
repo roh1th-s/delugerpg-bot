@@ -21,24 +21,25 @@ class DelugeBot:
         self.cookie = phpsessid
         self.http = DelugeAPIClient(phpsessid, password, username)
 
-    def catchPoke(self, poke, catch_token: str):
+    def catchPoke(self, poke, catch_token: str, catch_poke_no : int, catch_attack_no: int):
         wild_battle = self.http.startWildBattle(poke["url"], poke["secret"], catch_token)
 
-        curr_poke_no = 2
+        curr_poke_no = catch_poke_no 
 
         # can't put them to sleep if they're metallic (unless catching pokemon is shadow type)
         # pokeball = poke["name"].lower().find("metallic") == -1 and 'greatball' or 'masterball'
-        pokeball = poke["legend"] != 0 and 'masterball' or 'greatball'
+        is_legend = poke["legend"] != 0
+        pokeball =  is_legend and 'masterball' or 'greatball'
 
         while not wild_battle.game_over:
             self.http.doBattleMove(BattleMove(MoveType.POKE_SELECT_MOVE, selected_poke=curr_poke_no))
             sleep(uniform(1, 2))
 
             while not (wild_battle.current_duel_over or wild_battle.game_over):
-                self.http.doBattleMove(BattleMove(MoveType.ATTACK_MOVE, selected_attack=1))  # hypnosis
+                self.http.doBattleMove(BattleMove(MoveType.ATTACK_MOVE, selected_attack=catch_attack_no))  # hypnosis
                 sleep(uniform(1, 2))
 
-                while wild_battle.opponent.current_poke.current_ailment == "slp" and (
+                while (is_legend or wild_battle.opponent.current_poke.current_ailment == "slp") and (
                         not wild_battle.game_over):
                     self.http.doBattleMove(BattleMove(MoveType.ITEM_MOVE, selected_item=pokeball))
                     sleep(uniform(1, 2))
@@ -74,37 +75,61 @@ class DelugeBot:
     def startPokemonHunt(self, map_name: str, **kwargs):
         limit = kwargs.get("limit") or 1
         legends_only = kwargs.get("legends_only") or False
+        catch_poke_no = kwargs.get("catch_poke") or 1
+        catch_attack_no = kwargs.get("attack_no") or 1
 
         directions = ["n", "s", "e", "w", "ne", "nw", "se", "sw"]
-        while limit > 0:
-            result = self.http.moveInMap(map_name, directions[randrange(0, len(directions))])
 
+        moves_before_cooldown = 100
+
+        while limit > 0:
+            if moves_before_cooldown <= 0:
+                sleep(50)
+                moves_before_cooldown = 100
+
+            rand_direction = directions[randrange(0, len(directions))]
+            result = self.http.moveInMap(map_name, rand_direction)
+            
             if result == []:
                 # cannot move in this direction
                 continue
-            print(result["gox"], result["goy"], end="\r")
+            
+            moves_before_cooldown -= 1
+            
+            debug_coords = result.get("debug")
+            if debug_coords:
+                print(rand_direction, debug_coords[0], debug_coords[1], end="\r")
+            else:
+                captcha_path = result.get('goto')
+                if captcha_path:
+                    self.http.get(f"{Urls.base_url}{captcha_path}")
+                else:
+                    print("DEBUG : ", result)
 
             poke = result.get("poke")
             if poke:
                 if legends_only and poke["legend"] == 0:
-                    sleep(uniform(2, 3))
+                    # If we're only searching for legends and the poke is not a legend, continue
+                    sleep(uniform(2, 5))
                     continue
 
                 print(f"Found {poke['name']}")
 
                 if (not legends_only) and poke["name"].lower().find("metallic") != -1:
                     print("It is metallic. Skipping...")
-                elif result["haveit"] != "none":
+                elif (not legends_only) and result["haveit"] != "none":
                     print("Already have it. Skipping...")
                 else:
-                    if self.catchPoke(poke, result["catch_token"]):
+                    if self.catchPoke(poke, result["catch_token"], catch_poke_no, catch_attack_no):
+                        print()
                         limit -= 1
 
+            # if we move onto a new map
             newmap = result.get("newmap")
             if newmap:
                 map_name = newmap
 
-            sleep(uniform(2, 3))
+            sleep(uniform(2, 5))
 
     def basicBattleStrategy(self, battle: Battle, start_poke_no: int = None, attack_no: int = 2):
         curr_poke_no = start_poke_no or 1
