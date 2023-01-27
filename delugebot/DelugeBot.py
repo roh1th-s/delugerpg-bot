@@ -21,22 +21,23 @@ class DelugeBot:
         self.cookie = phpsessid
         self.http = DelugeAPIClient(phpsessid, password, username)
 
-    def catchPoke(self, poke, catch_token: str, catch_poke_no : int, catch_attack_no: int):
+    def catchPoke(self, poke, catch_token: str, catch_poke_no: int, catch_attack_no: int):
         wild_battle = self.http.startWildBattle(poke["url"], poke["secret"], catch_token)
 
-        curr_poke_no = catch_poke_no 
+        curr_poke_no = catch_poke_no
 
         # can't put them to sleep if they're metallic (unless catching pokemon is shadow type)
         # pokeball = poke["name"].lower().find("metallic") == -1 and 'greatball' or 'masterball'
         is_legend = poke["legend"] != 0
-        pokeball =  is_legend and 'masterball' or 'greatball'
+        pokeball = is_legend and 'masterball' or 'greatball'
 
         while not wild_battle.game_over:
             self.http.doBattleMove(BattleMove(MoveType.POKE_SELECT_MOVE, selected_poke=curr_poke_no))
             sleep(uniform(1, 2))
 
             while not (wild_battle.current_duel_over or wild_battle.game_over):
-                self.http.doBattleMove(BattleMove(MoveType.ATTACK_MOVE, selected_attack=catch_attack_no))  # hypnosis
+                self.http.doBattleMove(BattleMove(MoveType.ATTACK_MOVE,
+                                       selected_attack=catch_attack_no))  # hypnosis
                 sleep(uniform(1, 2))
 
                 while (is_legend or wild_battle.opponent.current_poke.current_ailment == "slp") and (
@@ -73,10 +74,25 @@ class DelugeBot:
         return False
 
     def startPokemonHunt(self, map_name: str, **kwargs):
+        """
+            Start catching pokemon automatically.
+
+            Params:
+            map_name: Name of the map to start searching in
+
+            Keyword args: (all optional)
+            limit : No. of pokemon to catch.
+            legends_only: Specify if only legends should be captured.
+            catch_poke: The team position (number 1-6) of the pokemon that should be selected first in a wild battle.
+            attack_no: The position of the attack (number 1 - 4) that should be performed first. 
+            (preferably something that weakens the wild pokemon, like hypnosis.)
+            poke_name: Name of the specific pokemon to be found.
+        """
         limit = kwargs.get("limit") or 1
         legends_only = kwargs.get("legends_only") or False
         catch_poke_no = kwargs.get("catch_poke") or 1
         catch_attack_no = kwargs.get("attack_no") or 1
+        poke_name = kwargs.get("poke_name") or None
 
         directions = ["n", "s", "e", "w", "ne", "nw", "se", "sw"]
 
@@ -89,13 +105,13 @@ class DelugeBot:
 
             rand_direction = directions[randrange(0, len(directions))]
             result = self.http.moveInMap(map_name, rand_direction)
-            
+
             if result == []:
                 # cannot move in this direction
                 continue
-            
+
             moves_before_cooldown -= 1
-            
+
             debug_coords = result.get("debug")
             if debug_coords:
                 print(rand_direction, debug_coords[0], debug_coords[1], end="\r")
@@ -108,6 +124,12 @@ class DelugeBot:
 
             poke = result.get("poke")
             if poke:
+                if poke_name:
+                    if poke["name"].lower() != poke_name.lower():
+                        # check if the poke is what we want, else skip
+                        sleep(uniform(2, 5))
+                        continue
+
                 if legends_only and poke["legend"] == 0:
                     # If we're only searching for legends and the poke is not a legend, continue
                     sleep(uniform(2, 5))
@@ -173,14 +195,14 @@ class DelugeBot:
         else:
             print(
                 f"Winner is {battle.winner.name}. Earnings: {results['money']}, Exp : {results['exp']}")
-    
+
     def defeatGym(self, gym_id):
         try:
             gym_battle = self.http.startGymBattle(gym_id)
         except GymNotFoundException as e:
             print(e)
             return False
-        
+
         self.basicBattleStrategy(gym_battle)
 
         results = self.http.getBattleResults()
@@ -191,7 +213,7 @@ class DelugeBot:
             print(f"Battle was lost. Winner is {gym_battle.winner.name}")
         else:
             print(
-                f"Defeated {gym_battle.opponent.name}. Earnings: {results['money']}, Exp : {results['exp']}")             
+                f"Defeated {gym_battle.opponent.name}. Earnings: {results['money']}, Exp : {results['exp']}")
 
         return True
 
@@ -211,7 +233,7 @@ class DelugeBot:
                 print()
                 if not success:
                     break
-            
+
             # elite 4
             for el4 in range(51, 55):
                 success = self.defeatGym(base_no + el4)
@@ -219,7 +241,7 @@ class DelugeBot:
                 print()
                 if not success:
                     break
-    
+
     def defeatGymsWithCodes(self, codes: list[int]):
         for code in codes:
             self.defeatGym(code)
