@@ -19,10 +19,10 @@ class DelugeBot:
             raise Exception("No session cookie provided to bot.")
 
         self.cookie = phpsessid
-        self.http = DelugeAPIClient(phpsessid, password, username, use_tls_client=True)
+        self.api = DelugeAPIClient(phpsessid, password, username, use_tls_client=True)
 
     def catchPoke(self, poke, catch_token: str, catch_poke_no: int, catch_attack_no: int):
-        wild_battle = self.http.startWildBattle(poke["url"], poke["secret"], catch_token)
+        wild_battle = self.api.startWildBattle(poke["url"], poke["secret"], catch_token)
 
         no_pokemon_in_team = len(wild_battle.player.team)
         curr_poke_no = catch_poke_no
@@ -33,17 +33,17 @@ class DelugeBot:
         pokeball = is_legend and 'masterball' or 'greatball'
 
         while not wild_battle.game_over:
-            self.http.doBattleMove(BattleMove(MoveType.POKE_SELECT_MOVE, selected_poke=curr_poke_no))
+            self.api.doBattleMove(BattleMove(MoveType.POKE_SELECT_MOVE, selected_poke=curr_poke_no))
             sleep(uniform(1, 2))
 
             while not (wild_battle.current_duel_over or wild_battle.game_over):
-                self.http.doBattleMove(BattleMove(MoveType.ATTACK_MOVE,
+                self.api.doBattleMove(BattleMove(MoveType.ATTACK_MOVE,
                                        selected_attack=catch_attack_no))  # hypnosis
                 sleep(uniform(1, 2))
 
                 while (is_legend or wild_battle.opponent.current_poke.current_ailment == "slp") and (
                         not wild_battle.game_over):
-                    self.http.doBattleMove(BattleMove(MoveType.ITEM_MOVE, selected_item=pokeball))
+                    self.api.doBattleMove(BattleMove(MoveType.ITEM_MOVE, selected_item=pokeball))
                     sleep(uniform(1, 2))
 
             if wild_battle.isPokeFainted(curr_poke_no):
@@ -56,7 +56,7 @@ class DelugeBot:
                 if curr_poke_no > no_pokemon_in_team:
                     curr_poke_no = 1
 
-        results = self.http.getBattleResults()
+        results = self.api.getBattleResults()
 
         wild_poke = wild_battle.opponent.team[0]
 
@@ -106,7 +106,7 @@ class DelugeBot:
                 moves_before_cooldown = 100
 
             rand_direction = choice([dir for dir, enabled in directions.items() if enabled])
-            result = self.http.moveInMap(map_name, rand_direction)
+            result = self.api.moveInMap(map_name, rand_direction)
 
             if result == []:
                 # cannot move in this direction
@@ -121,7 +121,7 @@ class DelugeBot:
             else:
                 captcha_path = result.get('goto')
                 if captcha_path:
-                    self.http.get(f"{Urls.base_url}{captcha_path}")
+                    self.api.get(f"{Urls.base_url}{captcha_path}")
                 else:
                     print("DEBUG : ", result)
 
@@ -162,13 +162,13 @@ class DelugeBot:
 
         # Basic battle strategy, go through every poke in order
         while not battle.game_over:
-            self.http.doBattleMove(BattleMove(
+            self.api.doBattleMove(BattleMove(
                 MoveType.POKE_SELECT_MOVE, selected_poke=curr_poke_no))
 
             sleep(uniform(1, 2))
 
             while not (battle.current_duel_over or battle.game_over):
-                self.http.doBattleMove(BattleMove(MoveType.ATTACK_MOVE, selected_attack=attack_no))
+                self.api.doBattleMove(BattleMove(MoveType.ATTACK_MOVE, selected_attack=attack_no))
                 sleep(uniform(1, 2))
 
             if battle.isPokeFainted(curr_poke_no):
@@ -189,7 +189,7 @@ class DelugeBot:
         reached_lvl_100 = False
 
         while not reached_lvl_100:
-            battle = self.http.startUserBattle(user)
+            battle = self.api.startUserBattle(user)
 
             if battle.player.team[start_poke_no - 1].level >= 100:
                 print(f"{battle.player.team[start_poke_no - 1].name} has reached level 100!")
@@ -198,7 +198,7 @@ class DelugeBot:
 
             self.basicBattleStrategy(battle, start_poke_no, attack_no)
 
-            results = self.http.getBattleResults()
+            results = self.api.getBattleResults()
 
             if results.get("cancelled"):
                 print("Battle was cancelled. [Most probably due to a timeout / invalid creds]")
@@ -210,19 +210,20 @@ class DelugeBot:
 
     def defeatGym(self, gym_id):
         try:
-            gym_battle = self.http.startGymBattle(gym_id)
+            gym_battle = self.api.startGymBattle(gym_id)
         except GymNotFoundException as e:
             print(e)
             return False
 
         self.basicBattleStrategy(gym_battle)
 
-        results = self.http.getBattleResults()
+        results = self.api.getBattleResults()
 
         if results.get("cancelled"):
             print("Battle was cancelled. [Most probably due to a timeout / invalid creds]")
         elif results.get("defeat"):
             print(f"Battle was lost. Winner is {gym_battle.winner.name}")
+            return False
         else:
             print(
                 f"Defeated {gym_battle.opponent.name}. Earnings: {results['money']}, Exp : {results['exp']}")
@@ -230,29 +231,25 @@ class DelugeBot:
         return True
 
     def defeatAllGyms(self, region_no: int = None):
-        start_no = region_no or 1
-        end_no = region_no and region_no + 1 or 9
+        all_gyms_info = self.api.getGymsInfo()
 
-        for region_no in range(start_no, end_no):
-            base_no = region_no * 100
+        for idx, (region, leaders) in enumerate(all_gyms_info.items()):
+            if region_no is not None and idx + 1 != region_no:
+                continue
 
-            # max gyms in a region is 13
+            print(f"Defeating gyms in region {idx + 1}: {region}...")
+            for leader in leaders:
 
-            # normal gym leaders
-            for gym_no in range(1, 14):
-                success = self.defeatGym(base_no + gym_no)
-                sleep(10)
-                print()
-                if not success:
-                    break
-
-            # elite 4
-            for el4 in range(51, 55):
-                success = self.defeatGym(base_no + el4)
-                sleep(10)
-                print()
-                if not success:
-                    break
+                if not leader["is_defeated"]:
+                    tries = 0
+                    while tries < 3:
+                        print("Trying to defeat gym leader", leader["leader_name"], "using url", leader["battle_url"])
+                        success = self.defeatGym(int(leader["battle_code"]))
+                        sleep(10)
+                        print()
+                        if success:
+                            break
+                        tries += 1
 
     def defeatGymsWithCodes(self, codes: list[int]):
         for code in codes:

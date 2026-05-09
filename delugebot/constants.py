@@ -9,6 +9,7 @@ class Urls:
     comp_battle = "https://www.delugerpg.com/battle/user"
     comp_battle_ajax = "https://www.delugerpg.com/ajax/battle/compbattle"
 
+    gyms = "https://www.delugerpg.com/gyms"
     gym_battle = "https://www.delugerpg.com/battle/gym"
     gym_battle_ajax = "https://www.delugerpg.com/ajax/battle/gymbattle"
 

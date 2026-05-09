@@ -1,6 +1,7 @@
 import os
 import re
 import json
+from typing import TypedDict
 from sys import argv
 from bs4 import BeautifulSoup
 from .constants import Urls
@@ -9,6 +10,12 @@ from .Battle import *
 
 class GymNotFoundException(Exception):
     pass
+
+class GymLeader(TypedDict):
+    leader_name: str
+    is_defeated: bool
+    battle_code: str | None
+    battle_url: str | None
 
 class MockResponse:
     def __init__(self, text, url, status_code=200):
@@ -127,6 +134,37 @@ class DelugeAPIClient:
             raise Exception("Couldn't find all the required map hashes")
 
         return [map_hash1, map_hash2, map_hash3]
+
+    def getGymsInfo(self) -> dict[str, list[GymLeader]]:
+        res = self.get(Urls.gyms)
+        gyms_page = res.text
+        soup = BeautifulSoup(gyms_page, 'html.parser')
+
+        region_links = soup.select("#gymlinks a")
+        region_names = [link.text.strip() for link in region_links]
+
+        gyms_info = {}
+        for region_name in region_names:
+            region_tab = soup.select(f"#tab_{region_name.lower()}")[0]
+            leader_cards = region_tab.select(".trainerbox")
+
+            region_leaders: list[GymLeader] = []
+
+            for card in leader_cards:
+                leader_name = card.select_one(".name").text.strip()
+                is_defeated = card.select_one(".gymdefeated") is not None
+                battle_btn = card.select_one("a.btn-battle")
+                battle_url = battle_btn["href"] if battle_btn else None
+                battle_code = battle_url.split("/")[-1] if battle_url else None
+                region_leaders.append({
+                    "leader_name": leader_name,
+                    "is_defeated": is_defeated,
+                    "battle_code": battle_code,
+                    "battle_url": battle_url
+                })
+            gyms_info[region_name] = region_leaders
+
+        return gyms_info
 
     def moveInMap(self, mapName: str, dir: str) -> list | dict:
         hashes = self.map_hash_cache.get(mapName)
