@@ -1,4 +1,4 @@
-from random import uniform, randrange
+from random import choice, uniform
 from time import sleep
 from .DelugeAPI import *
 
@@ -19,11 +19,12 @@ class DelugeBot:
             raise Exception("No session cookie provided to bot.")
 
         self.cookie = phpsessid
-        self.http = DelugeAPIClient(phpsessid, password, username)
+        self.http = DelugeAPIClient(phpsessid, password, username, use_tls_client=True)
 
     def catchPoke(self, poke, catch_token: str, catch_poke_no: int, catch_attack_no: int):
         wild_battle = self.http.startWildBattle(poke["url"], poke["secret"], catch_token)
 
+        no_pokemon_in_team = len(wild_battle.player.team)
         curr_poke_no = catch_poke_no
 
         # can't put them to sleep if they're metallic (unless catching pokemon is shadow type)
@@ -52,7 +53,7 @@ class DelugeBot:
                     print("Battle over")
                     break
 
-                if curr_poke_no > 6:
+                if curr_poke_no > no_pokemon_in_team:
                     curr_poke_no = 1
 
         results = self.http.getBattleResults()
@@ -94,8 +95,9 @@ class DelugeBot:
         catch_attack_no = kwargs.get("attack_no") or 1
         poke_name = kwargs.get("poke_name") or None
 
-        directions = ["n", "s", "e", "w", "ne", "nw", "se", "sw"]
-
+        directions = {
+            "n": True, "s": True, "e": True, "w": True, "ne": True, "nw": True, "se": True, "sw": True
+        }
         moves_before_cooldown = 100
 
         while limit > 0:
@@ -103,7 +105,7 @@ class DelugeBot:
                 sleep(50)
                 moves_before_cooldown = 100
 
-            rand_direction = directions[randrange(0, len(directions))]
+            rand_direction = choice([dir for dir, enabled in directions.items() if enabled])
             result = self.http.moveInMap(map_name, rand_direction)
 
             if result == []:
@@ -112,9 +114,10 @@ class DelugeBot:
 
             moves_before_cooldown -= 1
 
-            debug_coords = result.get("debug")
-            if debug_coords:
-                print(rand_direction, debug_coords[0], debug_coords[1], end="\r")
+            available_directions = result.get("dir")
+            if available_directions:
+                for dir in directions.keys():
+                    directions[dir] = available_directions.get(dir, 0) == 1
             else:
                 captcha_path = result.get('goto')
                 if captcha_path:
@@ -155,6 +158,7 @@ class DelugeBot:
 
     def basicBattleStrategy(self, battle: Battle, start_poke_no: int = None, attack_no: int = 2):
         curr_poke_no = start_poke_no or 1
+        no_pokemon_in_team = len(battle.player.team)
 
         # Basic battle strategy, go through every poke in order
         while not battle.game_over:
@@ -174,7 +178,7 @@ class DelugeBot:
                     print("Battle over")
                     break
 
-                if curr_poke_no > 6:
+                if curr_poke_no > no_pokemon_in_team:
                     curr_poke_no = 1
 
     def levelFarmBattle(self, poke_type: str, start_poke_no: int = None, attack_no: int = None):
@@ -182,19 +186,27 @@ class DelugeBot:
 
         user = f"s-{poke_type}"
 
-        battle = self.http.startUserBattle(user)
+        reached_lvl_100 = False
 
-        self.basicBattleStrategy(battle, start_poke_no, attack_no)
+        while not reached_lvl_100:
+            battle = self.http.startUserBattle(user)
 
-        results = self.http.getBattleResults()
+            if battle.player.team[start_poke_no - 1].level >= 100:
+                print(f"{battle.player.team[start_poke_no - 1].name} has reached level 100!")
+                reached_lvl_100 = True
+                break
 
-        if results.get("cancelled"):
-            print("Battle was cancelled. [Most probably due to a timeout / invalid creds]")
-        elif results.get("defeat"):
-            print(f"Battle was lost. Winner is {battle.winner.name}")
-        else:
-            print(
-                f"Winner is {battle.winner.name}. Earnings: {results['money']}, Exp : {results['exp']}")
+            self.basicBattleStrategy(battle, start_poke_no, attack_no)
+
+            results = self.http.getBattleResults()
+
+            if results.get("cancelled"):
+                print("Battle was cancelled. [Most probably due to a timeout / invalid creds]")
+            elif results.get("defeat"):
+                print(f"Battle was lost. Winner is {battle.winner.name}")
+            else:
+                print(
+                    f"Winner is {battle.winner.name}. Earnings: {results['money']}, Exp : {results['exp']}")
 
     def defeatGym(self, gym_id):
         try:

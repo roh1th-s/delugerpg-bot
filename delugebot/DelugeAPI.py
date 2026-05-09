@@ -1,4 +1,3 @@
-import requests
 import os
 import re
 import json
@@ -11,100 +10,57 @@ from .Battle import *
 class GymNotFoundException(Exception):
     pass
 
+class MockResponse:
+    def __init__(self, text, url, status_code=200):
+        self.text = text
+        self.url = url
+        self.status_code = status_code
+        self.ok = status_code < 400
+
 class DelugeAPIClient:
-    def __init__(self, sessCookie: str, password: str, username: str = None):
+    def __init__(self, sessCookie: str, password: str, username: str = None, use_tls_client: bool = False):
         if not sessCookie or sessCookie == "":
             raise Exception("Session cookie not provided.")
 
-        session = requests.Session()
-        session.cookies.set("PHPSESSID", sessCookie)
-        session.headers.update({
-            "User-Agent": os.getenv("USER_AGENT")
-        })
-
-        self.session: requests.Session = session
+        import undetected_chromedriver as uc
+        options = uc.ChromeOptions()
+        # Headless mode can be easily detected so we leave it headed
+        self.driver = uc.Chrome(options=options)
+        
+        # Navigate to a base page to set cookies
+        self.driver.get("https://www.delugerpg.com")
+        sess_cookie = self.driver.get_cookie("PHPSESSID")
+        if not sess_cookie or sess_cookie["value"] != sessCookie:
+            self.driver.delete_cookie("PHPSESSID")
+            self.driver.add_cookie({"name": "PHPSESSID", "value": sessCookie, "domain": "www.delugerpg.com"})
+        
+        self.wait_for_cloudflare()
 
         self.username = username or self.get_username()
         self.password = password
 
         self.current_battle = None
-
         self.map_hash_cache = {}
+
+    def wait_for_cloudflare(self):
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        WebDriverWait(self.driver, 5).until(lambda d: "Just a moment..." not in d.title)
 
     def get_username(self):
         res = self.get(Urls.profile)
-
         soup = BeautifulSoup(res.text, 'html.parser')
-
         info_box = soup.find("div", class_="infobox")
-
-        # should be first proffield div (that contains username)
         username_field = info_box.find("div", class_="proffield")
         name = username_field.h4.text
-
         return name
 
-    def should_revalidate(self, res: requests.Response):
-        soup = BeautifulSoup(res.text, 'html.parser')
-        meta_equiv = soup.select_one('meta[http-equiv="refresh"]')
-
-        is_captcha = False
-
-        if meta_equiv:
-            content = meta_equiv["content"]
-            if content.find(Urls.captcha) != -1:
-                is_captcha = True
-
-        if res.url.find(Urls.captcha) != -1:
-            is_captcha = True
-
-        if is_captcha:
-            print("Encountered captcha.")
-            self.logout()
-            
-        return res.url.startswith(Urls.timeout) or is_captcha or (not res.ok)
+    def should_revalidate(self, res):
+        return False  # Let selenium handle Cloudflare organically for now
 
     def revalidate_cookie(self):
-        print("Attempting to revalidate cookie...")
-        # Request the login/timeout page, which contains necessary tokens for login
-        timeout_res = self.session.get(Urls.timeout)
+        pass
 
-        soup = BeautifulSoup(timeout_res.text, 'html.parser')
-        login_form = soup.find(id="loginformform")
-        hidden_input = login_form.select_one('input[type="hidden"]')
-
-        name = hidden_input.attrs["name"]
-        value = hidden_input.attrs["value"]
-
-        if not (hasattr(self, 'username') or hasattr(self, 'password')):
-            raise Exception(
-                "Username / Password could not be found. Session cookie is probably invalid.")
-
-        # calling the login/validate endpoint with credentials
-        res = self.session.post(Urls.login_validate, {
-            "username": f"{self.username}",
-            "password": f"{self.password}",
-            f"{name}": f"{value}",
-            "Login": "Login"
-        })
-
-        # response is an intermediate loading page with a redirect link
-        # also sets a token which is checked later on presumably
-        soup = BeautifulSoup(res.text, 'html.parser')
-        loggin_in_div = soup.find(id="loggingin")
-
-        # looks roughly like /home/ad3ad8ac93ceabb2c/17527905
-        relative_href = loggin_in_div.select_one("a").attrs["href"]
-
-        # requesting the home page with the extra stuff specified in the redirect link
-        # cookie should be revalidated after this
-        res = self.session.get(f"{Urls.base_url}{relative_href}")
-
-        if res.ok:
-            print("Revalidated cookie successfully. Proceeding.")
-        else:
-            raise Exception("Unable to revalidate cookie!")
-    
     def clean_up(self):
         if self.current_battle:
             self.current_battle.terminate(invalidated=True)
@@ -113,51 +69,52 @@ class DelugeAPIClient:
         self.get(Urls.logout_ajax)
         print("Logged out.")
 
-    def get(self, url, *kwargs) -> requests.Response:
-        r"""Wrapper around requests.Session#get()
+    def get(self, url, *args, **kwargs):
+        self.driver.get(url)
+        self.wait_for_cloudflare()
+        return MockResponse(self.driver.page_source, self.driver.current_url)
 
-        :param url: URL for the new :class:`Request` object.
-        :param \*\*kwargs: Optional arguments that ``request`` takes.
-        :rtype: requests.Response
+    def post(self, url, data=None, json_=None, *args, **kwargs):
+        content_type = "application/x-www-form-urlencoded; charset=UTF-8"
+        import urllib.parse
+        if isinstance(data, dict):
+            body_str = urllib.parse.urlencode(data)
+        elif data:
+            body_str = data
+        else:
+            body_str = ""
+            
+        fetch_js = f"""
+        var callback = arguments[arguments.length - 1];
+        fetch('{url}', {{
+            method: 'POST',
+            headers: {{
+                'Content-Type': '{content_type}',
+                'X-Requested-With': 'XMLHttpRequest'
+            }},
+            body: `{body_str}`
+        }}).then(response => response.text().then(text => {{
+            callback({{status: response.status, url: response.url, text: text}});
+        }})).catch(error => callback({{error: error.message}}));
         """
-        res = self.session.get(url, *kwargs)
-
-        if self.should_revalidate(res):
-            self.revalidate_cookie()
-            self.clean_up()
-            res = self.session.get(url, *kwargs)
-
-        return res
-
-    def post(self, url, data=None, json=None, *kwargs) -> requests.Response:
-        r"""Wrapper around requests.Session#post()
-
-        :param url: URL for the new :class:`Request` object.
-        :param data: (optional) Dictionary, list of tuples, bytes, or file-like
-            object to send in the body of the :class:`Request`.
-        :param json: (optional) json to send in the body of the :class:`Request`.
-        :param \*\*kwargs: Optional arguments that ``request`` takes.
-        :rtype: requests.Response
-        """
-        res = self.session.post(url, data, json, *kwargs)
-
-        if self.should_revalidate(res):
-            self.revalidate_cookie()
-            self.clean_up()
-            res = self.session.post(url, data, json, *kwargs)
-
-        return res
+        
+        result = self.driver.execute_async_script(fetch_js)
+        if "error" in result:
+            raise Exception("Fetch failed: " + result["error"])
+        
+        return MockResponse(result["text"], result["url"], result["status"])
 
     def getMapHashes(self, mapName: str):
         response = self.get(f"{Urls.map}/{mapName}")
+
         results = re.search(
-            r"<script>\s*var\s*m_h1\s=\s*['|\"](.+)['|\"]\s*,m_h2\s*=\s*['|\"](.+)['|\"]\s*,\s*m_h3\s*=\s*['|\"](.+)['|\"]\s*;\s*</script>",
+            r"<script>\s*var\s+m_h1\s*=\s*[\'\"]([^\'\"]+)[\'\"]\s*,\s*m_h2\s*=\s*[\'\"]([^\'\"]+)[\'\"]\s*,\s*m_h3\s*=\s*[\'\"]([^\'\"]+)[\'\"]",
             response.text)
 
         if not results:
             if len(argv) >= 2:
-                if argv[1] == "-debug":
-                    with open("./experiments/test.html", "w") as f:
+                if argv[1] == "--debug":
+                    with open("./map_hashes.html", "w") as f:
                         f.write(response.text)
 
             raise Exception("Couldn't find map hashes in html")
@@ -193,7 +150,7 @@ class DelugeAPIClient:
         # create a battle object from the html with necessary metadata
         self.current_battle = Battle(BattleType.COMP_BATTLE, self).fromHtml(res.text)
 
-        print("Battle succesfully created")
+        print("Started a battle against user " + user)
 
         return self.current_battle
 
@@ -205,7 +162,7 @@ class DelugeAPIClient:
 
         if response.text.find("No such") != -1:
             raise GymNotFoundException("Invalid gym url")
-        
+
         self.current_battle = Battle(BattleType.GYM_BATTLE, self).fromHtml(response.text)
 
         print("Gym battle started")
@@ -256,7 +213,7 @@ class DelugeAPIClient:
             if battle_token:
                 battle.battle_token = battle_token
                 print(
-                    f"First move : Poke is {self.current_battle.player.team[move.selectedPokemon - 1].name} ")
+                    f"First move : Selected pokemon is {self.current_battle.player.team[move.selectedPokemon - 1].name} ")
             else:
                 raise Exception("Battle token not found")
         else:
@@ -273,7 +230,8 @@ class DelugeAPIClient:
             if move.type == MoveType.ATTACK_MOVE:
                 print(f"Doing attack {move.selectedAttack}")
             elif move.type == MoveType.POKE_SELECT_MOVE:
-                print(f"Selected pokemon {move.selectedPokemon} : {battle.player.team[move.selectedPokemon - 1].name}")
+                print(
+                    f"Selected pokemon no. {move.selectedPokemon} : {battle.player.team[move.selectedPokemon - 1].name}")
             elif move.type == MoveType.ITEM_MOVE:
                 print(f"Selected item : {move.selectedItem}")
 
@@ -304,6 +262,13 @@ class DelugeAPIClient:
         soup = BeautifulSoup(end_html, 'html.parser')
 
         if battle.type == BattleType.COMP_BATTLE or battle.type == BattleType.GYM_BATTLE:
+
+            if battle.winner.name != battle.player.name:
+                return {
+                    "defeat": True,
+                    "winner": battle.winner.name
+                }
+            
             notif_div = soup.find("div", class_="notify_done")
 
             if (not notif_div):
@@ -314,25 +279,23 @@ class DelugeAPIClient:
                         if content.find("/gyms") != -1:
                             return {
                                 "money": "unknown",
-                                "exp" : "unknown"
+                                "exp": "unknown"
                             }
 
                 # if the meta tag wasn't found, see if there was an error
                 if soup.find("div", class_="notify_error"):
                     return {
                         "money": "unknown",
-                        "exp" : "unknown"
+                        "exp": "unknown"
                     }
 
-                # Returning 3 things seperately, in case they need to be changed individually later 
+                # Returning 3 things seperately, in case they need to be changed individually later
                 return {
                     "money": "unknown",
-                    "exp" : "unknown"
+                    "exp": "unknown"
                 }
-                
 
             notif_text: str = notif_div.decode_contents()
-            
 
             res = re.search(r"won ([0-9,]+)\b.+gained ([0-9,]+) exp.", notif_text)
 
@@ -355,7 +318,7 @@ class DelugeAPIClient:
                 if argv[1] == "-debug":
                     with open('./experiments/wild_battle.html', 'w') as f:
                         f.write(end_html)
-                
+
             if info_box and (info_box.text.find("captured") != -1):
                 poke_caught = info_box.find("b")
 
