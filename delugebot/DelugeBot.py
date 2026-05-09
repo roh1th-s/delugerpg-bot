@@ -1,5 +1,7 @@
 from random import choice, uniform
 from time import sleep
+
+from delugebot.typechart import get_attack_multiplier
 from .DelugeAPI import *
 
 # class BotMode:
@@ -30,19 +32,21 @@ class DelugeBot:
         # can't put them to sleep if they're metallic (unless catching pokemon is shadow type)
         # pokeball = poke["name"].lower().find("metallic") == -1 and 'greatball' or 'masterball'
         is_legend = poke["legend"] != 0
-        pokeball = is_legend and 'masterball' or 'greatball'
+        pokeball = is_legend and "masterball" or "greatball"
 
         while not wild_battle.game_over:
             self.api.doBattleMove(BattleMove(MoveType.POKE_SELECT_MOVE, selected_poke=curr_poke_no))
             sleep(uniform(1, 2))
 
             while not (wild_battle.current_duel_over or wild_battle.game_over):
-                self.api.doBattleMove(BattleMove(MoveType.ATTACK_MOVE,
-                                       selected_attack=catch_attack_no))  # hypnosis
+                self.api.doBattleMove(
+                    BattleMove(MoveType.ATTACK_MOVE, selected_attack=catch_attack_no)
+                )  # hypnosis
                 sleep(uniform(1, 2))
 
-                while (is_legend or wild_battle.opponent.current_poke.current_ailment == "slp") and (
-                        not wild_battle.game_over):
+                while (
+                    is_legend or wild_battle.opponent.current_poke.current_ailment == "slp"
+                ) and (not wild_battle.game_over):
                     self.api.doBattleMove(BattleMove(MoveType.ITEM_MOVE, selected_item=pokeball))
                     sleep(uniform(1, 2))
 
@@ -67,27 +71,25 @@ class DelugeBot:
         elif results.get("defeat"):
             print(f"Battle was lost. Winner is {wild_poke.name}")
         else:
-            print(
-                f"Caught {results['poke_caught']} with stats {results['stats']}"
-            )
+            print(f"Caught {results['poke_caught']} with stats {results['stats']}")
             return True
 
         return False
 
     def startPokemonHunt(self, map_name: str, **kwargs):
         """
-            Start catching pokemon automatically.
+        Start catching pokemon automatically.
 
-            Params:
-            map_name: Name of the map to start searching in
+        Params:
+        map_name: Name of the map to start searching in
 
-            Keyword args: (all optional)
-            limit : No. of pokemon to catch.
-            legends_only: Specify if only legends should be captured.
-            catch_poke: The team position (number 1-6) of the pokemon that should be selected first in a wild battle.
-            attack_no: The position of the attack (number 1 - 4) that should be performed first. 
-            (preferably something that weakens the wild pokemon, like hypnosis.)
-            poke_name: Name of the specific pokemon to be found.
+        Keyword args: (all optional)
+        limit : No. of pokemon to catch.
+        legends_only: Specify if only legends should be captured.
+        catch_poke: The team position (number 1-6) of the pokemon that should be selected first in a wild battle.
+        attack_no: The position of the attack (number 1 - 4) that should be performed first.
+        (preferably something that weakens the wild pokemon, like hypnosis.)
+        poke_name: Name of the specific pokemon to be found.
         """
         limit = kwargs.get("limit") or 1
         legends_only = kwargs.get("legends_only") or False
@@ -96,7 +98,14 @@ class DelugeBot:
         poke_name = kwargs.get("poke_name") or None
 
         directions = {
-            "n": True, "s": True, "e": True, "w": True, "ne": True, "nw": True, "se": True, "sw": True
+            "n": True,
+            "s": True,
+            "e": True,
+            "w": True,
+            "ne": True,
+            "nw": True,
+            "se": True,
+            "sw": True,
         }
         moves_before_cooldown = 100
 
@@ -119,7 +128,7 @@ class DelugeBot:
                 for dir in directions.keys():
                     directions[dir] = available_directions.get(dir, 0) == 1
             else:
-                captcha_path = result.get('goto')
+                captcha_path = result.get("goto")
                 if captcha_path:
                     self.api.get(f"{Urls.base_url}{captcha_path}")
                 else:
@@ -156,18 +165,34 @@ class DelugeBot:
 
             sleep(uniform(2, 5))
 
-    def basicBattleStrategy(self, battle: Battle, start_poke_no: int = None, attack_no: int = 2):
+    def basicBattleStrategy(
+        self, battle: Battle, start_poke_no: int = None, fixed_attack_no: int = None
+    ):
         curr_poke_no = start_poke_no or 1
         no_pokemon_in_team = len(battle.player.team)
 
         # Basic battle strategy, go through every poke in order
         while not battle.game_over:
-            self.api.doBattleMove(BattleMove(
-                MoveType.POKE_SELECT_MOVE, selected_poke=curr_poke_no))
+            self.api.doBattleMove(BattleMove(MoveType.POKE_SELECT_MOVE, selected_poke=curr_poke_no))
 
             sleep(uniform(1, 2))
 
             while not (battle.current_duel_over or battle.game_over):
+                attacks = battle.player.team[curr_poke_no - 1].attacks
+                attack_no = choice(range(1, 5)) # default to random attack
+                if fixed_attack_no:
+                    attack_no = fixed_attack_no
+                elif attacks and len(attacks) == 4:
+                    # get best attack based on type chart
+                    highest_multiplier = 0
+                    for i, attack in enumerate(attacks):
+                        multiplier = get_attack_multiplier(
+                            attack.type, battle.opponent.current_poke.types
+                        )
+                        if multiplier > highest_multiplier:
+                            highest_multiplier = multiplier
+                            attack_no = i + 1
+
                 self.api.doBattleMove(BattleMove(MoveType.ATTACK_MOVE, selected_attack=attack_no))
                 sleep(uniform(1, 2))
 
@@ -181,7 +206,7 @@ class DelugeBot:
                 if curr_poke_no > no_pokemon_in_team:
                     curr_poke_no = 1
 
-    def levelFarmBattle(self, poke_type: str, start_poke_no: int = None, attack_no: int = None):
+    def levelFarmBattle(self, poke_type: str, start_poke_no: int = None, fixed_attack_no: int = None):
         # TODO Make it possible to level up every pokemon that you have
 
         user = f"s-{poke_type}"
@@ -196,7 +221,7 @@ class DelugeBot:
                 reached_lvl_100 = True
                 break
 
-            self.basicBattleStrategy(battle, start_poke_no, attack_no)
+            self.basicBattleStrategy(battle, start_poke_no, fixed_attack_no)
 
             results = self.api.getBattleResults()
 
@@ -206,7 +231,8 @@ class DelugeBot:
                 print(f"Battle was lost. Winner is {battle.winner.name}")
             else:
                 print(
-                    f"Winner is {battle.winner.name}. Earnings: {results['money']}, Exp : {results['exp']}")
+                    f"Winner is {battle.winner.name}. Earnings: {results['money']}, Exp : {results['exp']}"
+                )
 
     def defeatGym(self, gym_id):
         try:
@@ -226,7 +252,8 @@ class DelugeBot:
             return False
         else:
             print(
-                f"Defeated {gym_battle.opponent.name}. Earnings: {results['money']}, Exp : {results['exp']}")
+                f"Defeated {gym_battle.opponent.name}. Earnings: {results['money']}, Exp : {results['exp']}"
+            )
 
         return True
 
@@ -239,17 +266,24 @@ class DelugeBot:
 
             print(f"Defeating gyms in region {idx + 1}: {region}...")
             for leader in leaders:
-
                 if not leader["is_defeated"]:
                     tries = 0
                     while tries < 3:
-                        print("Trying to defeat gym leader", leader["leader_name"], "using url", leader["battle_url"])
+                        print(
+                            "Trying to defeat gym leader",
+                            leader["leader_name"],
+                            "using url",
+                            leader["battle_url"],
+                            f"Attempt {tries + 1}/3",
+                        )
                         success = self.defeatGym(int(leader["battle_code"]))
                         sleep(10)
                         print()
                         if success:
                             break
                         tries += 1
+                    if tries == 3:
+                        print(f"Failed to defeat {leader['leader_name']} after 3 attempts. Moving on...")
 
     def defeatGymsWithCodes(self, codes: list[int]):
         for code in codes:

@@ -4,6 +4,12 @@ from enum import Enum
 from .constants import Urls
 
 
+class PokeAttack:
+    def __init__(self, name: str, type: str):
+        self.name = name
+        self.type = type
+
+
 class Poke:
     def __init__(self, name: str, types: list[str], level: int, hp: int):
         self.name = name
@@ -12,6 +18,7 @@ class Poke:
         self.hp = hp
         self.hp_max = None
         self.current_ailment: str = None
+        self.attacks: list[PokeAttack] = []
 
 
 class BattlePlayer:
@@ -73,10 +80,10 @@ class Battle:
             poke_type_containers = li.select(".batname .tbtn")
 
             for type_container in poke_type_containers:
-                class_string = ''.join(type_container["class"])
+                class_string = " ".join(type_container["class"])
 
                 # types are in one of the classes as 'tbtn-{type}'
-                results = re.search(r"tbtn-([a-zA-Z]+)\b", class_string)
+                results = re.search(r"tbtn-([a-zA-Z]+)\s*\b", class_string)
 
                 poke_types.append(results.group(1))
 
@@ -113,20 +120,59 @@ class Battle:
                         ailment = result.group(1)
                         break
 
+        attacks = []
+
+        attk_list_ul = div.select_one(".attklist ul")
+        if attk_list_ul:
+            attk_lis = attk_list_ul.select("li")
+            for attk_li in attk_lis:
+                # get classname of li
+                classes = attk_li["class"]
+                # class is of the form typeclr-<type>
+                attk_type = None
+                for class_ in classes:
+                    if class_.startswith("typeclr-"):
+                        result = re.search(r"typeclr-(.+)\b", class_)
+                        if result:
+                            attk_type = result.group(1)
+                            break
+
+                attk_label = attk_li.select_one("label")
+                attk_name = None
+                if attk_label:
+                    attk_name = attk_li.select_one("label").contents[0].strip()
+                else:
+                    attk_name = attk_li.contents[0].strip()
+
+                if attk_name and attk_type:
+                    attacks.append(PokeAttack(attk_name, attk_type))
+
+        if len(attacks) > 0 and len(attacks) < 4:
+            print(
+                "Warning: Expected 4 attacks but found",
+                len(attacks),
+                "for pokemon",
+                poke_name,
+                "Not filling attacks in local state to avoid potential parsing errors.",
+            )
+            attacks = []
+
         return {
             "poke_name": poke_name,
             "hp_rem": hp_remaining,
             "hp_max": hp_max,
-            "ailment": ailment
+            "ailment": ailment,
+            "attacks": attacks,
         }
 
     def fromHtml(self, html: str):
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = BeautifulSoup(html, "html.parser")
 
         oppTeamDiv = soup.find(id="teamleft")
         selfTeamDiv = soup.find(id="teamright")
 
         if not (oppTeamDiv or selfTeamDiv):
+            input("Maybe captcha? Press enter to continue...")
             raise Exception("Invalid html")
 
         opp_name, opp_pokes = Battle.parseInitialBattleData(oppTeamDiv)
@@ -156,25 +202,39 @@ class Battle:
 
     def updatePokemon(self, poke_data, player: BattlePlayer):
         found = False
-        for i in range(len(player.team)):
-            poke = player.team[i]
-            if poke.hp == 0:
-                continue
+        poke_to_update = None
 
-            if poke.name == poke_data["poke_name"]:
-                found = True
-                player.current_poke = poke
-                poke.hp = poke_data["hp_rem"]
-                poke.hp_max = poke_data["hp_max"]
-                poke.current_ailment = poke_data["ailment"]
+        if player.current_poke and poke_data["poke_name"] == player.current_poke.name:
+            found = True
+            poke_to_update = player.current_poke
+        else:
+            for i in range(len(player.team)):
+                poke = player.team[i]
+                if poke.hp == 0:
+                    continue
 
-                if poke_data["hp_rem"] == 0:
-                    player.pokes_left -= 1
-                    self.current_duel_over = True
-                break
+                if poke.name == poke_data["poke_name"]:
+                    found = True
+                    player.current_poke = poke
+                    poke_to_update = poke
+                    break
+
+        if poke_to_update:
+            poke_to_update.hp = poke_data["hp_rem"]
+            poke_to_update.hp_max = poke_data["hp_max"]
+            poke_to_update.current_ailment = poke_data["ailment"]
+
+            if poke_to_update.attacks is None or len(poke_to_update.attacks) == 0:
+                poke_to_update.attacks = poke_data["attacks"]
+
+            if poke_data["hp_rem"] == 0:
+                player.pokes_left -= 1
+                self.current_duel_over = True
 
         if not found:
-            print(f"Pokemon {poke_data['poke_name']} of {player.name} was not found in local state.")
+            print(
+                f"Pokemon {poke_data['poke_name']} of {player.name} was not found in local state."
+            )
 
     def isPokeFainted(self, poke_no, player: BattlePlayer = None):
         if not player:
@@ -189,7 +249,7 @@ class Battle:
 
     def update(self, http_res):
         html = http_res.text
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = BeautifulSoup(html, "html.parser")
 
         if self.current_duel_over:
             # If in the previous move the duel was over, this must be a fresh duel.
@@ -198,11 +258,12 @@ class Battle:
         # Sometimes gives us the game over page directly???
         game_end_div = soup.find("div", class_="notify_done")
         if not game_end_div:
-            game_end_div = soup.find(
-                "div", class_="infobox") or soup.find(
-                "div", class_="notify_warning") or soup.find(
-                "div", class_="notify_error")
-                
+            game_end_div = (
+                soup.find("div", class_="infobox")
+                or soup.find("div", class_="notify_warning")
+                or soup.find("div", class_="notify_error")
+            )
+
             meta_tag = soup.select_one('meta[http-equiv="refresh"]')
             if meta_tag:
                 content = meta_tag["content"]
