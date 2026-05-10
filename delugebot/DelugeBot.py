@@ -149,7 +149,7 @@ class DelugeBot:
 
                 print(f"Found {poke['name']}")
 
-                if (not legends_only) and poke["name"].lower().find("metallic") != -1:
+                if poke["name"].lower().find("metallic") != -1 and poke["legend"] == 0:
                     print("It is metallic. Skipping...")
                 elif (not legends_only) and result["haveit"] != "none":
                     print("Already have it. Skipping...")
@@ -283,7 +283,7 @@ class DelugeBot:
                             break
                         tries += 1
                     if tries == 3:
-                        print(f"Failed to defeat {leader['leader_name']} after 3 attempts. Moving on...")
+                        print(f"Failed to defeat {leader['leader_name']} after 3 attempts. Moving on...\n")
 
     def defeatGymsWithCodes(self, codes: list[int]):
         for code in codes:

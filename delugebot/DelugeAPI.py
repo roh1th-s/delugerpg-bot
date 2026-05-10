@@ -103,7 +103,7 @@ class DelugeAPIClient:
             # We've hit captcha
             beep(1000)
             input(
-                "Captcha detected. Please solve the captcha in the opened browser window, then press Enter here to continue..."
+                "Captcha detected. Please solve the captcha in the opened browser window, click return to game, wait for it to load and then press Enter here to continue..."
             )
 
         return MockResponse(self.driver.page_source, self.driver.current_url)
@@ -295,7 +295,9 @@ class DelugeAPIClient:
                 return
 
             if move.type == MoveType.ATTACK_MOVE:
-                print(f"Doing attack {move.selectedAttack}: {battle.player.current_poke.attacks[move.selectedAttack - 1].name}")
+                print(
+                    f"Doing attack {move.selectedAttack}: {battle.player.current_poke.attacks[move.selectedAttack - 1].name}"
+                )
             elif move.type == MoveType.POKE_SELECT_MOVE:
                 print(
                     f"Selected pokemon no. {move.selectedPokemon} : {battle.player.team[move.selectedPokemon - 1].name}"
@@ -308,14 +310,14 @@ class DelugeAPIClient:
             user_div = soup.find(id="user")
             user_damage = user_div.find("div", class_="damage")
             if user_damage:
-                result_text = user_damage.decode_contents().strip()
+                result_text = user_damage.decode_contents().strip().replace("<br/>", " ")
                 if result_text != "":
                     print(result_text)
 
             opponent_div = soup.find(id="opponent")
             opponent_damage = opponent_div.find("div", class_="damage")
             if opponent_damage:
-                result_text = opponent_damage.decode_contents().strip()
+                result_text = opponent_damage.decode_contents().strip().replace("<br/>", " ")
                 if result_text != "":
                     print(f"{result_text}")
 

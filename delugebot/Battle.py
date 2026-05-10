@@ -172,7 +172,6 @@ class Battle:
         selfTeamDiv = soup.find(id="teamright")
 
         if not (oppTeamDiv or selfTeamDiv):
-            input("Maybe captcha? Press enter to continue...")
             raise Exception("Invalid html")
 
         opp_name, opp_pokes = Battle.parseInitialBattleData(oppTeamDiv)
