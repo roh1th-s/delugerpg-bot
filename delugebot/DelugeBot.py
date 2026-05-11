@@ -31,7 +31,7 @@ class DelugeBot:
 
         # can't put them to sleep if they're metallic (unless catching pokemon is shadow type)
         # pokeball = poke["name"].lower().find("metallic") == -1 and 'greatball' or 'masterball'
-        is_legend = poke["legend"] != 0
+        is_legend = poke["legend"] != 0 or poke["mythical"] != 0
         pokeball = is_legend and "masterball" or "greatball"
 
         while not wild_battle.game_over:
@@ -107,6 +107,9 @@ class DelugeBot:
             "se": True,
             "sw": True,
         }
+
+        last_direction = None
+
         moves_before_cooldown = 100
 
         while limit > 0:
@@ -114,8 +117,18 @@ class DelugeBot:
                 sleep(50)
                 moves_before_cooldown = 100
 
-            rand_direction = choice([dir for dir, enabled in directions.items() if enabled])
-            result = self.api.moveInMap(map_name, rand_direction)
+            # prefer going back and forth between 2 directions to stay on the same tile type
+            rand_direction = last_direction == "n" and "s" or "n"
+            if not directions[rand_direction]:
+                # if that direction is not available, choose a random available direction
+                rand_direction = choice([dir for dir, enabled in directions.items() if enabled])  
+            last_direction = rand_direction
+
+            try:
+                result = self.api.moveInMap(map_name, rand_direction)
+            except Exception as e:
+                print("Error while moving in map:", e)
+                continue
 
             if result == []:
                 # cannot move in this direction
@@ -136,24 +149,26 @@ class DelugeBot:
 
             poke = result.get("poke")
             if poke:
+                print(f"Found {poke['name']}")
                 if poke_name:
                     if poke["name"].lower() != poke_name.lower():
                         # check if the poke is what we want, else skip
                         sleep(uniform(2, 5))
                         continue
+                
+                is_legend = poke["legend"] != 0 or poke["mythical"] != 0
 
-                if legends_only and poke["legend"] == 0:
+                if legends_only and not is_legend:
                     # If we're only searching for legends and the poke is not a legend, continue
                     sleep(uniform(2, 5))
                     continue
 
-                print(f"Found {poke['name']}")
-
-                if poke["name"].lower().find("metallic") != -1 and poke["legend"] == 0:
+                if poke["name"].lower().find("metallic") != -1 and not is_legend:
                     print("It is metallic. Skipping...")
-                elif (not legends_only) and result["haveit"] != "none":
+                elif result["haveit"] != "none" and not is_legend:
                     print("Already have it. Skipping...")
                 else:
+                    print("Trying to catch it...")
                     if self.catchPoke(poke, result["catch_token"], catch_poke_no, catch_attack_no):
                         print()
                         limit -= 1
@@ -163,7 +178,7 @@ class DelugeBot:
             if newmap:
                 map_name = newmap
 
-            sleep(uniform(2, 5))
+            sleep(uniform(1, 3))
 
     def basicBattleStrategy(
         self, battle: Battle, start_poke_no: int = None, fixed_attack_no: int = None
@@ -179,7 +194,7 @@ class DelugeBot:
 
             while not (battle.current_duel_over or battle.game_over):
                 attacks = battle.player.team[curr_poke_no - 1].attacks
-                attack_no = choice(range(1, 5)) # default to random attack
+                attack_no = choice(range(1, 5))  # default to random attack
                 if fixed_attack_no:
                     attack_no = fixed_attack_no
                 elif attacks and len(attacks) == 4:
@@ -206,7 +221,9 @@ class DelugeBot:
                 if curr_poke_no > no_pokemon_in_team:
                     curr_poke_no = 1
 
-    def levelFarmBattle(self, poke_type: str, start_poke_no: int = None, fixed_attack_no: int = None):
+    def levelFarmBattle(
+        self, poke_type: str, start_poke_no: int = None, fixed_attack_no: int = None
+    ):
         # TODO Make it possible to level up every pokemon that you have
 
         user = f"s-{poke_type}"
@@ -283,7 +300,9 @@ class DelugeBot:
                             break
                         tries += 1
                     if tries == 3:
-                        print(f"Failed to defeat {leader['leader_name']} after 3 attempts. Moving on...\n")
+                        print(
+                            f"Failed to defeat {leader['leader_name']} after 3 attempts. Moving on...\n"
+                        )
 
     def defeatGymsWithCodes(self, codes: list[int]):
         for code in codes:

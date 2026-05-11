@@ -207,7 +207,13 @@ class DelugeAPIClient:
             f"{Urls.map_update_ajax}/{hashes[2]}/{hashes[0]}",
             {"direction": dir, "maphash": hashes[1], "mhx": os.getenv("MHX")},
         )
-        return json.loads(res.text)
+
+        try:
+            parsed = json.loads(res.text)
+        except json.JSONDecodeError:
+            raise Exception("Invalid response from server (invalid json): " + res.text)
+
+        return parsed
 
     def startUserBattle(self, user: str) -> Battle:
         res = self.get(f"{Urls.comp_battle}/u/{user}")
@@ -308,14 +314,14 @@ class DelugeAPIClient:
             # Show result of moves
             soup = BeautifulSoup(res.text, "html.parser")
             user_div = soup.find(id="user")
-            user_damage = user_div.find("div", class_="damage")
+            user_damage = user_div and user_div.find("div", class_="damage")
             if user_damage:
                 result_text = user_damage.decode_contents().strip().replace("<br/>", " ")
                 if result_text != "":
                     print(result_text)
 
             opponent_div = soup.find(id="opponent")
-            opponent_damage = opponent_div.find("div", class_="damage")
+            opponent_damage = opponent_div and opponent_div.find("div", class_="damage")
             if opponent_damage:
                 result_text = opponent_damage.decode_contents().strip().replace("<br/>", " ")
                 if result_text != "":
